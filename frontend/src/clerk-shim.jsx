@@ -6,6 +6,7 @@ import React, {
   useMemo,
   useState,
 } from "react";
+import { getGoogleClientId, signInWithGoogle } from "./lib/googleAuth.js";
 
 const SESSION_KEY = "patientAuth_v1";
 const USERS_KEY = "patientUsers_v1";
@@ -43,7 +44,9 @@ function toClerkUser(user) {
     id: user.id,
     fullName: user.name,
     firstName: String(user.name || "Patient").split(" ")[0],
+    imageUrl: user.picture || "",
     primaryEmailAddress: { emailAddress: user.email },
+    emailAddresses: [{ emailAddress: user.email }],
   };
 }
 
@@ -71,11 +74,33 @@ function PatientAuthModal({ mode, setMode, onClose, onSuccess }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [googleLoading, setGoogleLoading] = useState(false);
 
-  function handleGoogle() {
-    const users = seedUsers();
-    const demo = users.find((item) => item.email === DEMO_PATIENT.email) || DEMO_PATIENT;
-    onSuccess({ id: demo.id, name: demo.name, email: demo.email });
+  async function handleGoogle(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    setError("");
+    setGoogleLoading(true);
+    try {
+      const profile = await signInWithGoogle();
+      const users = seedUsers();
+      const existing = users.find((item) => item.email === profile.email);
+      const sessionUser = existing
+        ? { ...existing, name: existing.name || profile.name, picture: profile.picture }
+        : { id: profile.id, name: profile.name, email: profile.email, picture: profile.picture, password: "" };
+      if (!existing) {
+        localStorage.setItem(USERS_KEY, JSON.stringify([...users, sessionUser]));
+      }
+      onSuccess(sessionUser);
+    } catch (err) {
+      if (err?.message === "GOOGLE_CLIENT_MISSING") {
+        setError("Google login is not configured. Add a Google Web Client ID, then restart the site.");
+      } else {
+        setError(err?.message || "Google sign-in failed. Please try again.");
+      }
+    } finally {
+      setGoogleLoading(false);
+    }
   }
 
   function handleSubmit(event) {
@@ -112,23 +137,40 @@ function PatientAuthModal({ mode, setMode, onClose, onSuccess }) {
   }
 
   return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/40 px-4">
-      <button type="button" className="absolute inset-0" aria-label="Close login" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl sm:p-8">
+    <div
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/40 px-4"
+      onClick={onClose}
+    >
+      <div
+        className="relative z-10 w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl sm:p-8"
+        onClick={(event) => event.stopPropagation()}
+      >
         <button type="button" className="absolute right-4 top-4 text-gray-400" onClick={onClose}>✕</button>
         <h2 className="text-xl font-semibold text-gray-900">
           {mode === "register" ? "Create your account" : "Sign in to MediCare"}
         </h2>
         <p className="mt-1 text-sm text-gray-500">
-          {mode === "register" ? "Welcome! Please fill in the details to get started." : "Use your patient email to continue."}
+          {mode === "register" ? "Welcome! Please fill in the details to get started." : "Use your Google account or email to continue."}
         </p>
         <button
           type="button"
           onClick={handleGoogle}
-          className="mt-5 flex w-full items-center justify-center gap-2 rounded-md border border-gray-200 py-2.5 text-sm font-medium"
+          disabled={googleLoading}
+          className="mt-5 flex w-full items-center justify-center gap-2 rounded-md border border-gray-200 py-2.5 text-sm font-medium disabled:opacity-60"
         >
-          Continue with Google
+          <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
+            <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 8 3.1l5.7-5.7C34.2 6.1 29.4 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.7-.4-3.5z" />
+            <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 16 19 12 24 12c3.1 0 5.8 1.2 8 3.1l5.7-5.7C34.2 6.1 29.4 4 24 4 16.3 4 9.6 8.3 6.3 14.7z" />
+            <path fill="#4CAF50" d="M24 44c5.2 0 10-2 13.6-5.2l-6.3-5.3C29.2 35.1 26.7 36 24 36c-5.3 0-9.7-3.3-11.3-8.1l-6.5 5C9.5 39.6 16.2 44 24 44z" />
+            <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-1.1 3.2-3.5 5.8-6.6 7.5l6.3 5.3C38.3 37.3 44 31.5 44 24c0-1.3-.1-2.7-.4-3.5z" />
+          </svg>
+          {googleLoading ? "Connecting to Google..." : "Continue with Google"}
         </button>
+        {!getGoogleClientId() ? (
+          <p className="mt-2 text-center text-[11px] text-amber-700">
+            Google popup needs a Web Client ID from Google Cloud.
+          </p>
+        ) : null}
         <div className="my-4 text-center text-xs text-gray-400">or</div>
         <form className="space-y-3" onSubmit={handleSubmit}>
           {mode === "register" ? (
@@ -189,7 +231,7 @@ export function ClerkProvider({ children }) {
       isLoaded: true,
       signOut,
       openSignIn: () => {
-        setMode("register");
+        setMode("login");
         setShowSignIn(true);
       },
       getToken,

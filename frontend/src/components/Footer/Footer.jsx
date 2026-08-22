@@ -1,6 +1,6 @@
 import { Facebook, Instagram, Linkedin, Mail, MapPin, Phone, Send, Twitter, Youtube } from "lucide-react";
 import { Link } from "react-router-dom";
-import { HOSPITAL_PHONE } from "../../lib/api.js";
+import { HOSPITAL_EMAIL, HOSPITAL_LOCATION, HOSPITAL_PHONE } from "../../lib/api.js";
 import logo from "../../assets/logo.png";
 
 const quickLinks = [
@@ -47,10 +47,10 @@ export default function Footer() {
               <Phone size={16} /> +91 {HOSPITAL_PHONE}
             </p>
             <p className="mt-2 flex items-center gap-2 text-sm text-emerald-800">
-              <Mail size={16} /> hexagansservices@gmail.com
+              <Mail size={16} /> {HOSPITAL_EMAIL}
             </p>
             <p className="mt-2 flex items-center gap-2 text-sm text-emerald-800">
-              <MapPin size={16} /> Lucknow, India
+              <MapPin size={16} /> {HOSPITAL_LOCATION}
             </p>
           </div>
           <div>

@@ -4,6 +4,8 @@ import cors from "cors";
 import mongoose from "mongoose";
 import path from "path";
 import { fileURLToPath } from "url";
+import fs from "fs";
+import os from "os";
 import api from "./routes/index.js";
 import { optionalClerk } from "./middleware/auth.js";
 import Doctor from "./models/Doctor.js";
@@ -14,16 +16,26 @@ const PORT = Number(process.env.PORT) || 4000;
 const MONGODB_URI = process.env.MONGODB_URI || "mongodb://127.0.0.1:27017/medicare";
 
 const app = express();
+
+function isAllowedOrigin(origin) {
+  if (!origin) return true;
+  const allowed = [
+    process.env.FRONTEND_URL,
+    process.env.ADMIN_URL,
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174",
+  ].filter(Boolean);
+  if (allowed.includes(origin)) return true;
+  return /\.vercel\.app$/.test(origin);
+}
+
 app.use(
   cors({
-    origin: [
-      process.env.FRONTEND_URL || "http://localhost:5173",
-      process.env.ADMIN_URL || "http://localhost:5174",
-      "http://localhost:5173",
-      "http://localhost:5174",
-      "http://127.0.0.1:5173",
-      "http://127.0.0.1:5174",
-    ].filter(Boolean),
+    origin(origin, callback) {
+      callback(null, isAllowedOrigin(origin));
+    },
     credentials: true,
   })
 );
@@ -75,18 +87,28 @@ async function seedIfEmpty() {
   }
 }
 
+function mongoLabel(uri) {
+  if (uri.includes("mongodb+srv")) return "MongoDB Atlas";
+  return uri.replace(/\/\/([^:]+):([^@]+)@/, "//$1:***@");
+}
+
 async function connectDb() {
+  const isAtlas = MONGODB_URI.includes("mongodb+srv");
   try {
-    await mongoose.connect(MONGODB_URI, { serverSelectionTimeoutMS: 3000 });
-    console.log("MongoDB connected:", MONGODB_URI);
+    await mongoose.connect(MONGODB_URI, { serverSelectionTimeoutMS: isAtlas ? 20000 : 3000 });
+    console.log("MongoDB connected:", mongoLabel(MONGODB_URI));
   } catch (err) {
-    if (process.env.NODE_ENV === "production") {
-      console.error("MongoDB connection required in production:", err.message);
+    if (process.env.NODE_ENV === "production" || isAtlas) {
+      console.error("MongoDB connection failed:", err.message);
       throw err;
     }
     console.warn("Local MongoDB not available, starting in-memory database...", err.message);
     const { MongoMemoryServer } = await import("mongodb-memory-server");
-    const mem = await MongoMemoryServer.create();
+    const dbPath = path.join(os.tmpdir(), `medicare-mongo-${Date.now()}`);
+    fs.mkdirSync(dbPath, { recursive: true });
+    const mem = await MongoMemoryServer.create({
+      instance: { dbName: "medicare", dbPath },
+    });
     const uri = mem.getUri();
     await mongoose.connect(uri);
     console.log("In-memory MongoDB connected");

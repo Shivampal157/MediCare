@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Clock, Mail, MapPin, Phone, Send } from "lucide-react";
-import { HOSPITAL_PHONE } from "../../lib/api.js";
+import { HOSPITAL_EMAIL, HOSPITAL_LOCATION, HOSPITAL_MAP_EMBED, HOSPITAL_PHONE } from "../../lib/api.js";
 
 export default function ContactPage() {
   const initial = { name: "", email: "", phone: "", department: "", service: "", message: "" };
@@ -85,19 +85,19 @@ export default function ContactPage() {
           <div className="rounded-[28px] bg-white p-6 shadow-md">
             <h2 className="font-serif text-2xl font-bold text-[#0f5c3a]">Visit Our Clinic</h2>
             <p className="mt-3 flex items-start gap-2 text-emerald-800">
-              <MapPin size={18} className="mt-0.5 shrink-0" /> Gomtinagar, Lucknow, Uttar Pradesh
+              <MapPin size={18} className="mt-0.5 shrink-0" /> {HOSPITAL_LOCATION}
             </p>
             <p className="mt-2 flex items-center gap-2 text-emerald-800">
               <Phone size={18} /> {HOSPITAL_PHONE}
             </p>
             <p className="mt-2 flex items-center gap-2 text-emerald-800">
-              <Mail size={18} /> hexagansservices@gmail.com
+              <Mail size={18} /> {HOSPITAL_EMAIL}
             </p>
           </div>
           <iframe
-            src="https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d3559.460792853461!2d80.98709187529213!3d26.870382662861033!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x399be2ae3cea2421%3A0x6c0de12e8a77818f!2sGomti%20Nagar%2C%20Lucknow%2C%20Uttar%20Pradesh!5e0!3m2!1sen!2sin!4v1731769000000!5m2!1sen!2sin"
+            src={HOSPITAL_MAP_EMBED}
             className="h-64 w-full rounded-[28px] border-0 shadow-md"
-            title="Gomti Nagar Map"
+            title="Varanasi Map"
             loading="lazy"
             allowFullScreen
           />

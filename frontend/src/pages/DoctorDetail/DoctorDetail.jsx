@@ -134,7 +134,8 @@ export default function DoctorDetail() {
       const phone = normalizePhoneTo10(rawPhone);
       const email =
         (user.emailAddresses && user.emailAddresses[0]?.emailAddress) ||
-        user.primaryEmailAddress ||
+        user.primaryEmailAddress?.emailAddress ||
+        (typeof user.primaryEmailAddress === "string" ? user.primaryEmailAddress : "") ||
         "";
 
       setFormData((prev) => ({
