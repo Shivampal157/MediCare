@@ -123,7 +123,7 @@ export async function chat(req, res) {
       return res.status(400).json({ success: false, message: "Please type a question." });
     }
 
-    const models = [process.env.GEMINI_MODEL, "gemini-2.0-flash", "gemini-2.5-flash", "gemini-1.5-flash"].filter(Boolean);
+    const models = [process.env.GEMINI_MODEL, "gemini-3.6-flash", "gemini-flash-latest", "gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.0-flash"].filter(Boolean);
     let reply = "";
     let lastError = null;
     for (const model of [...new Set(models)]) {
