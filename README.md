@@ -32,6 +32,18 @@ Repo: [github.com/Shivampal157/MediCare](https://github.com/Shivampal157/MediCar
 
 Doctor panel: `/login` then `/doctor-admin`. Admin panel runs separately on port 5174 locally.
 
+## AI assistant
+
+The green **MediCare AI** button (bottom-right on the patient site) is a Gemini chatbot.
+
+- Suggests a doctor specialty or diagnostic service from symptoms
+- Answers in Hindi or English
+- Does **not** diagnose, prescribe, or replace a doctor
+- Emergencies: tells the patient to call **108** / go to ER
+- Uses live doctor and service lists from MongoDB
+
+Try it on the [live site](https://medi-care-two-blush.vercel.app). Locally, set `GEMINI_API_KEY` in `backend/.env` (from [Google AI Studio](https://aistudio.google.com/apikey)). Default model: `gemini-3.6-flash` (`GEMINI_MODEL` can override). Never commit the key.
+
 ## Run locally
 
 1. Copy env files:
@@ -84,10 +96,10 @@ Admin: http://localhost:5174
 | `FRONTEND_URL` | Patient site origin (CORS) |
 | `ADMIN_URL` | Admin origin (CORS) |
 | `PORT` | Defaults to `4000` locally; Render sets this |
+| `GEMINI_API_KEY` | Google AI Studio key for MediCare AI chat |
+| `GEMINI_MODEL` | Optional; defaults through `gemini-3.6-flash` then newer flash models |
 
-Optional: `GEMINI_API_KEY` (chatbot), `STRIPE_SECRET_KEY`, Cloudinary keys.
-
-Green **MediCare AI** button on the live site (bottom-right) uses `/api/ai/chat`. Add `GEMINI_API_KEY` in Render from [Google AI Studio](https://aistudio.google.com/apikey). Without it the chat returns a setup message.
+Optional: `STRIPE_SECRET_KEY`, Cloudinary keys.
 
 **Frontend** (`frontend/.env`)
 
@@ -110,6 +122,7 @@ Already live:
 
 1. **API** — Render Blueprint from `render.yaml` (`medicare-api`). Free instances sleep after idle time; the first request can take 30–60 seconds.
 2. **Patient site** — Vercel, root directory `frontend`.
+3. **AI** — Render env `GEMINI_API_KEY` (already set for production).
 
 After changing the Vercel domain, update:
 
