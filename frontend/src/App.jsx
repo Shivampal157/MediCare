@@ -15,6 +15,7 @@ import PaymentSection from "./components/PaymentSection/PaymentSection.jsx";
 import PaymentPage from "./components/PaymentPage/PaymentPage.jsx";
 import PaymentResultPage from "./pages/PaymentResultPage/PaymentResultPage.jsx";
 import WhatsAppButton from "./components/WhatsAppButton/WhatsAppButton.jsx";
+import AiChat from "./components/AiChat/AiChat.jsx";
 import LoginPage from "./components/LoginPage/LoginPage.jsx";
 import DoctorDetail from "./pages/DoctorDetail/DoctorDetail.jsx";
 import ServiceDetailPage from "./pages/ServiceDetailPage/ServiceDetailPage.jsx";
@@ -62,6 +63,7 @@ function PublicLayout({ children }) {
       {children}
       <Footer />
       <WhatsAppButton />
+      <AiChat />
       <ScrollButton />
     </>
   );

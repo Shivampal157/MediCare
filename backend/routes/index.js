@@ -35,8 +35,11 @@ import {
   cancelServiceAppointment,
   getServiceAppointmentStats,
 } from "../controllers/serviceAppointmentController.js";
+import { chat as aiChat } from "../controllers/aiController.js";
 
 const router = Router();
+
+router.post("/ai/chat", aiChat);
 
 router.post("/doctors/login", loginDoctor);
 router.post("/doctors", upload.single("image"), createDoctor);

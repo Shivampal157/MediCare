@@ -20,6 +20,7 @@ Repo: [github.com/Shivampal157/MediCare](https://github.com/Shivampal157/MediCar
 - Backend: Express, MongoDB Atlas
 - Auth: Google Sign-In (patients) + doctor email login
 - Hosting: Vercel (frontend), Render (API)
+- AI assistant: Google Gemini (symptoms → doctor/service guidance, not a diagnosis)
 
 ## Demo login
 
@@ -84,7 +85,9 @@ Admin: http://localhost:5174
 | `ADMIN_URL` | Admin origin (CORS) |
 | `PORT` | Defaults to `4000` locally; Render sets this |
 
-Optional: `STRIPE_SECRET_KEY`, Cloudinary keys.
+Optional: `GEMINI_API_KEY` (chatbot), `STRIPE_SECRET_KEY`, Cloudinary keys.
+
+Green **MediCare AI** button on the live site (bottom-right) uses `/api/ai/chat`. Add `GEMINI_API_KEY` in Render from [Google AI Studio](https://aistudio.google.com/apikey). Without it the chat returns a setup message.
 
 **Frontend** (`frontend/.env`)
 
