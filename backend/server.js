@@ -95,23 +95,27 @@ function mongoLabel(uri) {
 async function connectDb() {
   const isAtlas = MONGODB_URI.includes("mongodb+srv");
   try {
-    await mongoose.connect(MONGODB_URI, { serverSelectionTimeoutMS: isAtlas ? 20000 : 3000 });
+    await mongoose.connect(MONGODB_URI, { serverSelectionTimeoutMS: isAtlas ? 25000 : 3000 });
     console.log("MongoDB connected:", mongoLabel(MONGODB_URI));
   } catch (err) {
-    if (process.env.NODE_ENV === "production" || isAtlas) {
-      console.error("MongoDB connection failed:", err.message);
-      throw err;
+    console.error("Primary MongoDB connection failed:", err.message);
+    // Fallback to in-memory MongoDB (works in both dev and production)
+    // This prevents server crash when Atlas is unreachable
+    try {
+      console.warn("Falling back to in-memory MongoDB...");
+      const { MongoMemoryServer } = await import("mongodb-memory-server");
+      const dbPath = path.join(os.tmpdir(), `medicare-mongo-${Date.now()}`);
+      fs.mkdirSync(dbPath, { recursive: true });
+      const mem = await MongoMemoryServer.create({
+        instance: { dbName: "medicare", dbPath },
+      });
+      const uri = mem.getUri();
+      await mongoose.connect(uri);
+      console.log("In-memory MongoDB connected (fallback mode - data will not persist)");
+    } catch (memErr) {
+      console.error("In-memory MongoDB also failed:", memErr.message);
+      throw memErr;
     }
-    console.warn("Local MongoDB not available, starting in-memory database...", err.message);
-    const { MongoMemoryServer } = await import("mongodb-memory-server");
-    const dbPath = path.join(os.tmpdir(), `medicare-mongo-${Date.now()}`);
-    fs.mkdirSync(dbPath, { recursive: true });
-    const mem = await MongoMemoryServer.create({
-      instance: { dbName: "medicare", dbPath },
-    });
-    const uri = mem.getUri();
-    await mongoose.connect(uri);
-    console.log("In-memory MongoDB connected");
   }
 }
 
