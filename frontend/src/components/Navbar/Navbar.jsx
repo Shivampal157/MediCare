@@ -56,6 +56,7 @@ export default function Navbar() {
     { label: "Services", href: "/services" },
     { label: "Appointments", href: "/appointments" },
     { label: "Contact", href: "/contact" },
+    { label: "Architecture", href: "/system-status" },
   ];
 
   return (

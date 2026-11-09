@@ -1,6 +1,11 @@
+import crypto from "crypto";
 import Stripe from "stripe";
 import Appointment from "../models/Appointment.js";
 import Doctor from "../models/Doctor.js";
+import { lockManager } from "../distributed/lockManager.js";
+import { eventBus } from "../distributed/eventBus.js";
+import { circuitBreakers } from "../distributed/circuitBreaker.js";
+import { resilientStore } from "../distributed/resilientStore.js";
 
 const FRONTEND_URL = process.env.FRONTEND_URL;
 const MAJOR_ADMIN_ID = process.env.MAJOR_ADMIN_ID || "admin";
@@ -36,6 +41,19 @@ export const getAppointments = async (req, res) => {
     const page = Math.max(1, parseInt(pageRaw, 10) || 1);
     const skip = (page - 1) * limit;
 
+    if (!resilientStore.isMongoConnected()) {
+      let items = [...resilientStore.appointments];
+      if (doctorId) items = items.filter((a) => String(a.doctorId) === String(doctorId));
+      if (mobile) items = items.filter((a) => a.mobile === mobile);
+      if (status) items = items.filter((a) => a.status === status);
+      if (patientClerkId || createdBy) {
+        const target = patientClerkId || createdBy;
+        items = items.filter((a) => a.createdBy === target);
+      }
+      const paged = items.slice(skip, skip + limit);
+      return res.json({ success: true, data: paged, appointments: paged, meta: { page, limit, total: items.length } });
+    }
+
     const filter = {};
     if (doctorId) filter.doctorId = doctorId;
     if (mobile) filter.mobile = mobile;
@@ -64,6 +82,10 @@ export const getMyAppointments = async (req, res) => {
     if (!clerkUserId) {
       return res.json({ success: true, data: [], appointments: [] });
     }
+    if (!resilientStore.isMongoConnected()) {
+      const items = resilientStore.appointments.filter((a) => a.createdBy === clerkUserId);
+      return res.json({ success: true, data: items, appointments: items });
+    }
     const items = await Appointment.find({ createdBy: clerkUserId }).sort({ createdAt: -1 });
     return res.json({ success: true, data: items, appointments: items });
   } catch (err) {
@@ -79,6 +101,12 @@ export const getAppointmentsByDoctor = async (req, res) => {
     const limit = Math.min(200, Math.max(1, parseInt(limitRaw, 10) || 50));
     const page = Math.max(1, parseInt(pageRaw, 10) || 1);
     const skip = (page - 1) * limit;
+
+    if (!resilientStore.isMongoConnected()) {
+      const items = resilientStore.appointments.filter((a) => String(a.doctorId) === String(doctorId));
+      return res.json({ success: true, data: items.slice(skip, skip + limit), appointments: items, meta: { page, limit, total: items.length } });
+    }
+
     const filter = { doctorId };
     if (mobile) filter.mobile = mobile;
     if (status) filter.status = status;
@@ -98,33 +126,92 @@ export const getAppointmentsByDoctor = async (req, res) => {
 };
 
 export const createAppointment = async (req, res) => {
-  try {
-    const {
-      doctorId,
-      patientName,
-      mobile,
-      age = "",
-      gender = "",
-      date,
-      time,
-      fee,
-      fees,
-      notes = "",
-      email,
-      paymentMethod,
-      owner: ownerFromBody = null,
-      doctorName: doctorNameFromBody,
-      speciality: specialityFromBody,
-      doctorImageUrl: doctorImageUrlFromBody,
-      doctorImagePublicId: doctorImagePublicIdFromBody,
-    } = req.body || {};
+  const {
+    doctorId,
+    patientName,
+    mobile,
+    age = "",
+    gender = "",
+    date,
+    time,
+    fee,
+    fees,
+    notes = "",
+    email,
+    paymentMethod,
+    owner: ownerFromBody = null,
+    doctorName: doctorNameFromBody,
+    speciality: specialityFromBody,
+    doctorImageUrl: doctorImageUrlFromBody,
+    doctorImagePublicId: doctorImagePublicIdFromBody,
+  } = req.body || {};
 
-    if (!doctorId || !patientName || !mobile || !date || !time) {
-      return res.status(400).json({ success: false, message: "doctorId, patientName, mobile, date and time are required" });
+  if (!doctorId || !patientName || !mobile || !date || !time) {
+    return res.status(400).json({ success: false, message: "doctorId, patientName, mobile, date and time are required" });
+  }
+
+  // Acquire Distributed Mutex Lock for (doctorId + date + time) to prevent double-booking
+  const slotResourceKey = `slot:doctor:${String(doctorId).trim()}:${String(date).trim()}:${String(time).trim()}`;
+  const slotLock = await lockManager.acquireLock(slotResourceKey, {
+    ttlMs: 10000,
+    maxWaitMs: 1500,
+    retryDelayMs: 75,
+  });
+
+  if (!slotLock) {
+    return res.status(409).json({
+      success: false,
+      code: "SLOT_LOCK_CONTENTION",
+      message: "Another patient is currently booking this exact doctor slot. Please wait a moment or pick another slot.",
+    });
+  }
+
+  res.setHeader("X-Fencing-Token", String(slotLock.fencingToken));
+
+  try {
+    let doctor = null;
+    if (resilientStore.isMongoConnected()) {
+      doctor = await Doctor.findById(doctorId).catch(() => null);
+    }
+    if (!doctor) {
+      doctor = resilientStore.doctors.find((d) => String(d._id) === String(doctorId)) || null;
+    }
+    if (!doctor) {
+      return res.status(404).json({ success: false, message: "Doctor not found" });
     }
 
-    const doctor = await Doctor.findById(doctorId);
-    if (!doctor) return res.status(404).json({ success: false, message: "Doctor not found" });
+    // Critical Section Check: verify slot isn't already booked by an active appointment
+    if (resilientStore.isMongoConnected()) {
+      const slotTaken = await Appointment.findOne({
+        doctorId: String(doctor._id || doctorId),
+        date: String(date),
+        time: String(time),
+        status: { $nin: ["Canceled"] },
+      }).lean();
+
+      if (slotTaken) {
+        return res.status(409).json({
+          success: false,
+          code: "SLOT_ALREADY_BOOKED",
+          message: `This time slot (${date} at ${time}) is already booked. Please choose another slot.`,
+        });
+      }
+    } else {
+      const slotTaken = resilientStore.appointments.find(
+        (a) =>
+          String(a.doctorId) === String(doctor._id || doctorId) &&
+          a.date === String(date) &&
+          a.time === String(time) &&
+          a.status !== "Canceled"
+      );
+      if (slotTaken) {
+        return res.status(409).json({
+          success: false,
+          code: "SLOT_ALREADY_BOOKED",
+          message: `This time slot (${date} at ${time}) is already booked. Please choose another slot.`,
+        });
+      }
+    }
 
     const numericFee = safeNumber(fee ?? fees ?? doctor.fee ?? 0) ?? 0;
     const clerkUserId = resolveClerkUserId(req);
@@ -167,23 +254,43 @@ export const createAppointment = async (req, res) => {
       email: email || "",
     };
 
+    const saveAppointmentRecord = async (recordData) => {
+      if (resilientStore.isMongoConnected()) {
+        return Appointment.create(recordData);
+      }
+      const fallbackDoc = {
+        _id: crypto.randomBytes(12).toString("hex"),
+        ...recordData,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      resilientStore.appointments.unshift(fallbackDoc);
+      return fallbackDoc;
+    };
+
     if (numericFee === 0) {
-      const created = await Appointment.create({
+      const created = await saveAppointmentRecord({
         ...base,
         status: "Confirmed",
         payment: { method: base.payment.method, status: "Paid", amount: 0 },
         paidAt: new Date(),
       });
-      return res.status(201).json({ success: true, appointment: created, checkoutUrl: null });
+      eventBus.publish("appointment.created", created, { correlationId: req.correlationId });
+      return res.status(201).json({ success: true, appointment: created, checkoutUrl: null, fencingToken: slotLock.fencingToken });
     }
 
     if (paymentMethod === "Cash" || !stripe) {
-      const created = await Appointment.create({
+      const created = await saveAppointmentRecord({
         ...base,
         status: "Pending",
-        payment: { method: paymentMethod === "Online" && !stripe ? "Cash" : paymentMethod === "Cash" ? "Cash" : "Online", status: "Pending", amount: numericFee },
+        payment: {
+          method: paymentMethod === "Online" && !stripe ? "Cash" : paymentMethod === "Cash" ? "Cash" : "Online",
+          status: "Pending",
+          amount: numericFee,
+        },
       });
-      return res.status(201).json({ success: true, appointment: created, checkoutUrl: null });
+      eventBus.publish("appointment.created", created, { correlationId: req.correlationId });
+      return res.status(201).json({ success: true, appointment: created, checkoutUrl: null, fencingToken: slotLock.fencingToken });
     }
 
     const frontBase = buildFrontendBase(req);
@@ -191,42 +298,54 @@ export const createAppointment = async (req, res) => {
       return res.status(500).json({ success: false, message: "Frontend URL could not be determined. Set FRONTEND_URL." });
     }
 
-    const session = await stripe.checkout.sessions.create({
-      payment_method_types: ["card"],
-      mode: "payment",
-      customer_email: email || undefined,
-      line_items: [
-        {
-          price_data: {
-            currency: "inr",
-            product_data: { name: `Appointment - ${String(patientName).slice(0, 40)}` },
-            unit_amount: Math.round(numericFee * 100),
+    // Execute Stripe Checkout call through Distributed Circuit Breaker
+    const session = await circuitBreakers.stripeCheckout.execute(async () =>
+      stripe.checkout.sessions.create({
+        payment_method_types: ["card"],
+        mode: "payment",
+        customer_email: email || undefined,
+        line_items: [
+          {
+            price_data: {
+              currency: "inr",
+              product_data: { name: `Appointment - ${String(patientName).slice(0, 40)}` },
+              unit_amount: Math.round(numericFee * 100),
+            },
+            quantity: 1,
           },
-          quantity: 1,
+        ],
+        success_url: `${frontBase}/appointment/success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${frontBase}/appointment/cancel`,
+        metadata: {
+          doctorId: String(doctorId),
+          doctorName: doctorName || "",
+          speciality: speciality || "",
+          patientName: base.patientName,
+          mobile: base.mobile,
+          clerkUserId: clerkUserId || "",
         },
-      ],
-      success_url: `${frontBase}/appointment/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${frontBase}/appointment/cancel`,
-      metadata: {
-        doctorId: String(doctorId),
-        doctorName: doctorName || "",
-        speciality: speciality || "",
-        patientName: base.patientName,
-        mobile: base.mobile,
-        clerkUserId: clerkUserId || "",
-      },
-    });
+      })
+    );
 
-    const created = await Appointment.create({
+    const created = await saveAppointmentRecord({
       ...base,
       sessionId: session.id,
       payment: { ...base.payment, providerId: session.payment_intent || "" },
       status: "Pending",
     });
-    return res.status(201).json({ success: true, appointment: created, checkoutUrl: session.url || null });
+
+    eventBus.publish("appointment.created", created, { correlationId: req.correlationId });
+    return res.status(201).json({
+      success: true,
+      appointment: created,
+      checkoutUrl: session.url || null,
+      fencingToken: slotLock.fencingToken,
+    });
   } catch (err) {
     console.error("createAppointment unexpected:", err);
-    return res.status(500).json({ success: false, message: "Server error" });
+    return res.status(500).json({ success: false, message: err.message || "Server error" });
+  } finally {
+    lockManager.releaseLock(slotResourceKey, slotLock.ownerToken);
   }
 };
 
@@ -235,9 +354,12 @@ export const confirmPayment = async (req, res) => {
     const session_id = req.body?.session_id || req.query?.session_id;
     if (!session_id) return res.status(400).json({ success: false, message: "session_id required" });
     if (!stripe) return res.status(500).json({ success: false, message: "Stripe not configured" });
-    const session = await stripe.checkout.sessions.retrieve(session_id);
 
-    let appt = await Appointment.findOneAndUpdate(
+    const session = await circuitBreakers.stripeCheckout.execute(() =>
+      stripe.checkout.sessions.retrieve(session_id)
+    );
+
+    const appt = await Appointment.findOneAndUpdate(
       { sessionId: session_id },
       {
         "payment.status": "Paid",
@@ -251,6 +373,7 @@ export const confirmPayment = async (req, res) => {
     if (!appt) {
       return res.status(404).json({ success: false, message: "Appointment not found for this payment session" });
     }
+    eventBus.publish("appointment.confirmed", appt, { correlationId: req.correlationId });
     return res.json({ success: true, appointment: appt });
   } catch (err) {
     console.error("confirmPayment:", err);
@@ -260,6 +383,14 @@ export const confirmPayment = async (req, res) => {
 
 export const updateAppointment = async (req, res) => {
   try {
+    if (!resilientStore.isMongoConnected()) {
+      const appt = resilientStore.appointments.find((a) => String(a._id) === String(req.params.id));
+      if (!appt) return res.status(404).json({ success: false, message: "Appointment not found" });
+      Object.assign(appt, req.body || {});
+      eventBus.publish("appointment.updated", appt, { correlationId: req.correlationId });
+      return res.json({ success: true, data: appt, appointment: appt });
+    }
+
     const appt = await Appointment.findById(req.params.id);
     if (!appt) return res.status(404).json({ success: false, message: "Appointment not found" });
     const body = req.body || {};
@@ -277,6 +408,7 @@ export const updateAppointment = async (req, res) => {
       appt.rescheduledTo = { date: body.date, time: body.time };
     }
     await appt.save();
+    eventBus.publish("appointment.updated", appt, { correlationId: req.correlationId });
     return res.json({ success: true, data: appt, appointment: appt });
   } catch (err) {
     console.error("updateAppointment:", err);
@@ -286,6 +418,14 @@ export const updateAppointment = async (req, res) => {
 
 export const cancelAppointment = async (req, res) => {
   try {
+    if (!resilientStore.isMongoConnected()) {
+      const appt = resilientStore.appointments.find((a) => String(a._id) === String(req.params.id));
+      if (!appt) return res.status(404).json({ success: false, message: "Not found" });
+      appt.status = "Canceled";
+      eventBus.publish("appointment.canceled", appt, { correlationId: req.correlationId });
+      return res.json({ success: true, data: appt, appointment: appt });
+    }
+
     const appt = await Appointment.findById(req.params.id);
     if (!appt) return res.status(404).json({ success: false, message: "Not found" });
     if (appt.status === "Completed") {
@@ -293,6 +433,7 @@ export const cancelAppointment = async (req, res) => {
     }
     appt.status = "Canceled";
     await appt.save();
+    eventBus.publish("appointment.canceled", appt, { correlationId: req.correlationId });
     return res.json({ success: true, data: appt, appointment: appt });
   } catch (err) {
     console.error("cancelAppointment:", err);
@@ -302,6 +443,21 @@ export const cancelAppointment = async (req, res) => {
 
 export const getAppointmentStats = async (_req, res) => {
   try {
+    if (!resilientStore.isMongoConnected()) {
+      const total = resilientStore.appointments.length;
+      const revenue = resilientStore.appointments
+        .filter((a) => a.payment?.status === "Paid")
+        .reduce((acc, a) => acc + (Number(a.fees) || 0), 0);
+      const uniquePatients = new Set(resilientStore.appointments.map((a) => a.mobile)).size;
+      return res.json({
+        success: true,
+        total,
+        revenue,
+        patients: uniquePatients,
+        data: { total, revenue, patients: uniquePatients },
+      });
+    }
+
     const total = await Appointment.countDocuments();
     const paidAgg = await Appointment.aggregate([
       { $match: { "payment.status": "Paid" } },

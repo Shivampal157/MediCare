@@ -1,12 +1,17 @@
 {
   "name": "medicare-backend",
-  "version": "1.0.0",
-  "description": "MediCare backend API server",
+  "version": "2.0.0",
+  "description": "MediCare Distributed API Gateway & Microservices Mesh",
   "main": "server.js",
   "type": "module",
   "scripts": {
     "dev": "nodemon server.js",
-    "start": "node server.js"
+    "start": "node server.js",
+    "start:gateway": "node server.js",
+    "start:catalog": "node services/catalogService.js",
+    "start:booking": "node services/bookingService.js",
+    "start:ai": "node services/aiTriageService.js",
+    "start:worker": "node services/workerService.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

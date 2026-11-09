@@ -1,5 +1,7 @@
 import Doctor from "../models/Doctor.js";
 import Service from "../models/Service.js";
+import { circuitBreakers } from "../distributed/circuitBreaker.js";
+import { resilientStore } from "../distributed/resilientStore.js";
 
 const hits = new Map();
 
@@ -29,10 +31,18 @@ function cleanText(value) {
 }
 
 async function clinicContext() {
-  const [doctors, services] = await Promise.all([
-    Doctor.find().select("name specialization fee location").limit(12).lean(),
-    Service.find().select("name price shortDescription").limit(12).lean(),
-  ]);
+  let doctors = [];
+  let services = [];
+
+  if (resilientStore.isMongoConnected()) {
+    [doctors, services] = await Promise.all([
+      Doctor.find().select("name specialization fee location").limit(12).lean().catch(() => []),
+      Service.find().select("name price shortDescription").limit(12).lean().catch(() => []),
+    ]);
+  }
+  if (!doctors.length) doctors = resilientStore.doctors;
+  if (!services.length) services = resilientStore.services;
+
   const doctorLines = doctors
     .map((d) => `- ${d.name} (${d.specialization || "General"}), fee ₹${d.fee || 0}, ${d.location || "Varanasi"}`)
     .join("\n");
@@ -65,6 +75,29 @@ Rules:
 - You are not a replacement for a doctor. Add a one-line disclaimer at the end.`;
 }
 
+function buildLocalFallbackReply(userQuestion = "") {
+  const q = userQuestion.toLowerCase();
+  if (/chest pain|unconscious|bleeding|breath|stroke|heart attack|emergency|108/.test(q)) {
+    return "⚠️ Emergency Alert: Please call 108 or visit the nearest Emergency Room immediately. Do not wait for an online appointment.\n\n(Disclaimer: MediCare AI provides clinic navigation only, not medical advice.)";
+  }
+  if (/heart|bp|blood pressure|cardio|chest|ecg|cholesterol/.test(q)) {
+    return "For heart, BP, or ECG concerns, we recommend consulting **Dr. Rahul Sharma** (Cardiologist, ₹500) or **Dr. Sarah Johnson** (Cardiologist, ₹750), or booking a **Blood Pressure & ECG Check** (₹199) on the Services page.\n\n(Disclaimer: This is for clinic guidance only, not a medical diagnosis.)";
+  }
+  if (/child|baby|kid|vaccine|pediatric|fever/.test(q)) {
+    return "For children's health, fever, or vaccinations, you can book an appointment with **Dr. Emily Rodriguez** (Pediatrician, ₹600) from our Doctors page.\n\n(Disclaimer: This is for clinic guidance only, not a medical diagnosis.)";
+  }
+  if (/ear|nose|throat|sinus|tonsil|ent|hearing/.test(q)) {
+    return "For ear, sinus, or throat symptoms, we recommend **Dr. Rohan Mehta** (ENT Specialist, ₹600) on the Doctors page.\n\n(Disclaimer: This is for clinic guidance only, not a medical diagnosis.)";
+  }
+  if (/kidney|urine|renal|dialysis|stone/.test(q)) {
+    return "For kidney or urinary concerns, please consult **Dr. Kabir Malhotra** (Nephrologist, ₹700) on our Doctors page.\n\n(Disclaimer: This is for clinic guidance only, not a medical diagnosis.)";
+  }
+  if (/sugar|diabetes|checkup|blood test|xray|x-ray|test|lab/.test(q)) {
+    return "You can book diagnostic tests directly on our **Services** page:\n• **Full Body Health Checkup** (₹999)\n• **Blood Sugar & HbA1c Test** (₹249)\n• **X-Ray Scan** (₹499)\n• **Blood Pressure Check** (₹199)\n\n(Disclaimer: This is for clinic guidance only, not a medical diagnosis.)";
+  }
+  return "Welcome to MediCare Hospital, Varanasi! 🏥\n• Heart/BP: **Dr. Rahul Sharma** (Cardiologist, ₹500)\n• Child Care: **Dr. Emily Rodriguez** (Pediatrician, ₹600)\n• ENT/Throat: **Dr. Rohan Mehta** (ENT, ₹600)\n• Kidney: **Dr. Kabir Malhotra** (Nephrologist, ₹700)\n• Lab Tests: **Full Body Checkup** (₹999), **Blood Sugar** (₹249), **X-Ray** (₹499).\nOpen the **Doctors** or **Services** tab to book your slot, or WhatsApp us at +91 8081414473.\n\n(Disclaimer: General clinic guidance only, not medical advice.)";
+}
+
 async function generateWithGemini(apiKey, model, contents, instruction) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
   const res = await fetch(url, {
@@ -89,13 +122,6 @@ async function generateWithGemini(apiKey, model, contents, instruction) {
 
 export async function chat(req, res) {
   try {
-    const apiKey = String(process.env.GEMINI_API_KEY || "").trim();
-    if (!apiKey) {
-      return res.status(503).json({
-        success: false,
-        message: "AI assistant is not configured yet. Add GEMINI_API_KEY on the server.",
-      });
-    }
     if (!allowRequest(clientIp(req))) {
       return res.status(429).json({ success: false, message: "Too many questions. Please wait a few minutes." });
     }
@@ -113,36 +139,53 @@ export async function chat(req, res) {
       return res.status(400).json({ success: false, message: "Please type a question." });
     }
 
+    const lastUserMessage = history[history.length - 1].text;
+    const apiKey = String(process.env.GEMINI_API_KEY || "").trim();
+
+    if (!apiKey) {
+      res.setHeader("X-AI-Mode", "LOCAL-CLINICAL-TRIAGE-FALLBACK");
+      return res.json({
+        success: true,
+        reply: buildLocalFallbackReply(lastUserMessage),
+        mode: "fallback-triage",
+      });
+    }
+
     const { doctorLines, serviceLines } = await clinicContext();
     const contents = history.map((item) => ({
       role: item.role,
       parts: [{ text: item.text }],
     }));
     while (contents.length && contents[0].role === "model") contents.shift();
-    if (!contents.length) {
-      return res.status(400).json({ success: false, message: "Please type a question." });
-    }
 
-    const models = [process.env.GEMINI_MODEL, "gemini-3.6-flash", "gemini-flash-latest", "gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.0-flash"].filter(Boolean);
-    let reply = "";
-    let lastError = null;
-    for (const model of [...new Set(models)]) {
-      try {
-        reply = await generateWithGemini(apiKey, model, contents, systemPrompt(doctorLines, serviceLines));
-        lastError = null;
-        break;
-      } catch (err) {
-        lastError = err;
-      }
-    }
-    if (!reply) {
-      return res.status(502).json({
-        success: false,
-        message: lastError?.message || "AI is busy. Please try again.",
-      });
-    }
+    // Protected by Distributed Circuit Breaker with automatic local clinical triage fallback
+    const result = await circuitBreakers.geminiAi.execute(
+      async () => {
+        const models = [
+          process.env.GEMINI_MODEL,
+          "gemini-2.5-flash",
+          "gemini-2.0-flash",
+          "gemini-flash-latest",
+        ].filter(Boolean);
+        let lastError = null;
+        for (const model of [...new Set(models)]) {
+          try {
+            const reply = await generateWithGemini(apiKey, model, contents, systemPrompt(doctorLines, serviceLines));
+            return { reply, mode: `gemini:${model}` };
+          } catch (err) {
+            lastError = err;
+          }
+        }
+        throw lastError || new Error("All Gemini models failed");
+      },
+      () => ({
+        reply: buildLocalFallbackReply(lastUserMessage),
+        mode: "circuit-breaker-fallback",
+      })
+    );
 
-    return res.json({ success: true, reply });
+    res.setHeader("X-AI-Mode", result.mode);
+    return res.json({ success: true, reply: result.reply, mode: result.mode });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message || "AI request failed" });
   }

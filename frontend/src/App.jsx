@@ -19,6 +19,7 @@ import AiChat from "./components/AiChat/AiChat.jsx";
 import LoginPage from "./components/LoginPage/LoginPage.jsx";
 import DoctorDetail from "./pages/DoctorDetail/DoctorDetail.jsx";
 import ServiceDetailPage from "./pages/ServiceDetailPage/ServiceDetailPage.jsx";
+import SystemStatusPage from "./pages/SystemStatusPage/SystemStatusPage.jsx";
 import DoctorNavbar from "./doctor/Navbar/Navbar.jsx";
 import DashboardPage from "./doctor/DashboardPage/DashboardPage.jsx";
 import ListPage from "./doctor/ListPage/ListPage.jsx";
@@ -116,6 +117,7 @@ export default function App() {
               <Route path="/service-appointment/success" element={<PaymentResultPage kind="service" />} />
               <Route path="/service-appointment/cancel" element={<PaymentResultPage kind="service" />} />
               <Route path="/contact" element={<ContactPage />} />
+              <Route path="/system-status" element={<SystemStatusPage />} />
               <Route path="/login" element={<LoginPage />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>

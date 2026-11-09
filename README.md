@@ -127,22 +127,45 @@ Separate dashboard for appointments and profile. Demo: `dr1@gmail.com` / `123456
 
 ---
 
-## Architecture
+## Distributed Systems Architecture
 
 ```text
-  Patient site (Vite / React)          Doctor panel          Admin (Vite)
-           |                                  |                    |
-           +--------------- HTTPS REST -------------------------+
-                                      |
-                              Express API (:4000)
-                                      |
-           +------------+------------+-------------+------------+
-           |            |            |             |            |
-      MongoDB      Google GIS    Gemini       Stripe      Cloudinary
-       Atlas       (patients)    chat        Checkout      images
+  Patient Site (Vercel)          Doctor Dashboard            Admin Panel
+           |                            |                         |
+           +------------------- HTTPS / REST ---------------------+
+                                        |
+                         Nginx Load Balancer (:8080)
+                                        |
+                Smart API Gateway & Control Plane (:4000)
+          [Tracing • Sliding-Window Rate Limiter • Idempotency]
+                                        |
+        +-----------------------+-------+---------------+-----------------------+
+        |                       |                       |                       |
+  Catalog Service        Booking Service        AI Triage Service      Notification Worker
+     (:4001)                 (:4002)                 (:4003)                 (:4004)
+  [Cache-Aside]        [Redlock + Fencing]      [Circuit Breaker]       [Event Bus + DLQ]
+        |                       |                       |                       |
+        +-----------+-----------+-----------+-----------+-----------------------+
+                    |                       |                       |
+             Redis Cluster            MongoDB Atlas          External APIs
+         (L2 Cache & Mutex Locks)   (+ Resilient Store)    (Gemini / Stripe)
 ```
 
-**Hosting:** frontend on **Vercel**, API on **Render**, database on **MongoDB Atlas**.
+### Distributed Systems Primitives Implemented
+
+| Primitive | Implementation (`backend/distributed/`) | Engineering Guarantee |
+| --- | --- | --- |
+| **Distributed Mutex Locks & Fencing Tokens** | `lockManager.js` | Redlock-style lock on `slot:doctor:<id>:<date>:<time>` with monotonic fencing tokens (`X-Fencing-Token`) prevents race-condition double-booking under high concurrency |
+| **At-Most-Once Idempotency Engine** | `idempotency.js` | Deduplicates retries & double-clicks via `Idempotency-Key` header and payload SHA-256 fingerprinting (`X-Idempotent-Replay: true`) |
+| **Multi-Tier Distributed Cache (L1 + L2)** | `cache.js` | L1 in-memory LRU + L2 Redis RESP client with Cache-Aside middleware (`X-Cache: HIT \| MISS`) and event-driven prefix invalidation |
+| **Async Event Bus & Dead-Letter Queue** | `eventBus.js` | Pub/Sub message queue with exponential backoff retries (`maxAttempts: 3`), DLQ, and immutable event audit stream |
+| **Dependency Circuit Breakers** | `circuitBreaker.js` | State machine (`CLOSED` → `OPEN` → `HALF_OPEN`) isolating Stripe, Cloudinary, and Gemini AI with clinical rule-based fallback triage |
+| **Distributed Tracing & Percentiles** | `tracing.js` | Propagates `X-Request-Id`, `X-Correlation-Id`, `X-Served-By`, and tracks live `p50` / `p95` / `p99` latency histograms |
+| **Zero-Downtime Resilient Store** | `resilientStore.js` | Non-blocking gateway startup + automatic in-memory fallback if MongoDB Atlas is paused, preventing cold-start crashes |
+
+> **Live Telemetry & Concurrency Simulator:** Open `/system-status` in the frontend (or `GET /api/system/architecture`) to inspect the service mesh health and trigger an **8-way parallel booking race-condition test** in real time.
+
+**Hosting:** frontend on **Vercel**, API Gateway on **Render** (Hybrid Mode) or **Docker Compose** (Multi-Container Microservices Mode), database on **MongoDB Atlas**.
 
 ---
 
@@ -185,8 +208,11 @@ cp frontend/.env.example frontend/.env
 Set `MONGODB_URI` in `backend/.env` (Atlas). If local Mongo is down, development can fall back to an in-memory database.
 
 ```bash
-# API  →  http://localhost:4000
+# Option A: Hybrid Gateway Mode (Single Command)  →  http://localhost:4000
 cd backend && npm install && npm run dev
+
+# Option B: Full Multi-Container Microservices Cluster (Nginx + Gateway + 4 Services + Redis + Mongo)
+docker compose up --build
 
 # Patient site  →  http://localhost:5173
 cd frontend && npm install && npm run dev
@@ -195,7 +221,10 @@ cd frontend && npm install && npm run dev
 cd admin && npm install && npm run dev
 ```
 
-Health check: [http://localhost:4000/api/health](http://localhost:4000/api/health)
+Health & Distributed Telemetry:
+- Health check: [http://localhost:4000/api/health](http://localhost:4000/api/health)
+- Service Mesh Topology: [http://localhost:4000/api/system/architecture](http://localhost:4000/api/system/architecture)
+- Live Dashboard UI: [http://localhost:5173/system-status](http://localhost:5173/system-status)
 
 ---
 

@@ -1,7 +1,10 @@
 import jwt from "jsonwebtoken";
 import mongoose from "mongoose";
+import bcrypt from "bcryptjs";
 import Doctor from "../models/Doctor.js";
 import { uploadToCloudinary, deleteFromCloudinary } from "../utils/cloudinary.js";
+import { eventBus } from "../distributed/eventBus.js";
+import { resilientStore } from "../distributed/resilientStore.js";
 
 const parseTimeToMinutes = (t = "") => {
   const [time = "0:00", ampm = ""] = (t || "").split(" ");
@@ -102,6 +105,7 @@ export const createDoctor = async (req, res) => {
     const out = normalizeDocForClient(doc.toObject());
     delete out.password;
     const token = signDoctorToken(doc);
+    eventBus.publish("catalog.doctor.created", { entity: "Doctor", action: "created", id: doc._id, name: doc.name }, { correlationId: req.correlationId });
     return res.status(201).json({ success: true, data: out, token });
   } catch (err) {
     console.error("createDoctor:", err);
@@ -116,6 +120,18 @@ export const loginDoctor = async (req, res) => {
     if (!email || !password) {
       return res.status(400).json({ success: false, message: "Email and password are required" });
     }
+
+    if (!resilientStore.isMongoConnected()) {
+      const fallbackDoc = resilientStore.doctors.find((d) => d.email.toLowerCase() === email);
+      if (!fallbackDoc || !bcrypt.compareSync(password, fallbackDoc.passwordHash)) {
+        return res.status(401).json({ success: false, message: "Invalid credentials" });
+      }
+      const token = signDoctorToken(fallbackDoc);
+      const data = normalizeDocForClient(fallbackDoc);
+      delete data.passwordHash;
+      return res.json({ success: true, token, data, doctor: data });
+    }
+
     const doctor = await Doctor.findOne({ email });
     if (!doctor) return res.status(401).json({ success: false, message: "Invalid credentials" });
     const ok = await doctor.comparePassword(password);
@@ -136,6 +152,33 @@ export const getDoctors = async (req, res) => {
     const limit = Math.min(500, Math.max(1, parseInt(limitRaw, 10) || 200));
     const page = Math.max(1, parseInt(pageRaw, 10) || 1);
     const skip = (page - 1) * limit;
+
+    if (!resilientStore.isMongoConnected()) {
+      const searchQ = String(q || "").trim().toLowerCase();
+      let list = resilientStore.doctors.map((d) => ({
+        ...d,
+        id: d._id,
+        appointmentsTotal: 0,
+        appointmentsCompleted: 0,
+        appointmentsCanceled: 0,
+        earnings: 0,
+        raw: d,
+      }));
+      if (searchQ) {
+        list = list.filter(
+          (d) =>
+            d.name.toLowerCase().includes(searchQ) ||
+            d.specialization.toLowerCase().includes(searchQ)
+        );
+      }
+      const paged = list.slice(skip, skip + limit);
+      return res.json({
+        success: true,
+        data: paged,
+        doctors: paged,
+        meta: { page, limit, total: list.length, source: "resilient-memory-store" },
+      });
+    }
 
     const match = {};
     if (q && typeof q === "string" && q.trim()) {
@@ -220,6 +263,14 @@ export const getDoctors = async (req, res) => {
 export const getDoctorById = async (req, res) => {
   try {
     const { id } = req.params;
+    if (!resilientStore.isMongoConnected()) {
+      const fallback = resilientStore.doctors.find((d) => String(d._id) === String(id));
+      if (!fallback) return res.status(404).json({ success: false, message: "Doctor not found" });
+      const out = normalizeDocForClient(fallback);
+      delete out.passwordHash;
+      return res.json({ success: true, data: out, doctor: out });
+    }
+
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ success: false, message: "Invalid doctor id" });
     }
@@ -291,6 +342,7 @@ export async function updateDoctor(req, res) {
     await existing.save();
     const out = normalizeDocForClient(existing.toObject());
     delete out.password;
+    eventBus.publish("catalog.doctor.updated", { entity: "Doctor", action: "updated", id: existing._id, name: existing.name }, { correlationId: req.correlationId });
     return res.json({ success: true, data: out });
   } catch (err) {
     console.error("updateDoctor error:", err);
@@ -303,6 +355,7 @@ export const deleteDoctor = async (req, res) => {
     const doctor = await Doctor.findByIdAndDelete(req.params.id);
     if (!doctor) return res.status(404).json({ success: false, message: "Doctor not found" });
     if (doctor.imagePublicId) deleteFromCloudinary(doctor.imagePublicId).catch(() => {});
+    eventBus.publish("catalog.doctor.deleted", { entity: "Doctor", action: "deleted", id: req.params.id, name: doctor.name }, { correlationId: req.correlationId });
     return res.json({ success: true, message: "Doctor removed" });
   } catch (err) {
     console.error("deleteDoctor:", err);

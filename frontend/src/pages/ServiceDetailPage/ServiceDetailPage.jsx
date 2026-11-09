@@ -12,6 +12,7 @@ import { useAuth } from "@clerk/clerk-react";
 import toast, { Toaster } from "react-hot-toast";
 import { serviceDetailStyles, iconSize } from "../../assets/dummyStyles";
 import { API_BASE } from "../../lib/api.js";
+import { FALLBACK_SERVICES as servicesData } from "../../lib/fallbackCatalog.js";
 
 const DEFAULT_HOST = API_BASE;
 
@@ -325,6 +326,7 @@ export default function ServiceDetail() {
       const headers = {
         "Content-Type": "application/json",
         Accept: "application/json",
+        "Idempotency-Key": `svc-${payload.serviceId}-${payload.mobile}-${payload.date}-${payload.time}`,
       };
 
       if (token) {

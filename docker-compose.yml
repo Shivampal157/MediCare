@@ -1,0 +1,133 @@
+version: "3.9"
+
+services:
+  nginx-lb:
+    image: nginx:1.27-alpine
+    container_name: medicare-nginx-lb
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api-gateway
+    restart: unless-stopped
+
+  api-gateway:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: medicare-api-gateway
+    command: ["npm", "run", "start:gateway"]
+    ports:
+      - "4000:4000"
+    environment:
+      - NODE_ENV=production
+      - PORT=4000
+      - NODE_ID=gateway-node-1
+      - MONGODB_URI=mongodb://mongodb:27017/medicare
+      - REDIS_URL=redis://redis:6379
+      - CATALOG_SERVICE_URL=http://catalog-service:4001
+      - BOOKING_SERVICE_URL=http://booking-service:4002
+      - AI_SERVICE_URL=http://ai-triage-service:4003
+      - WORKER_SERVICE_URL=http://notification-worker:4004
+    depends_on:
+      - redis
+      - mongodb
+      - catalog-service
+      - booking-service
+      - ai-triage-service
+      - notification-worker
+    restart: unless-stopped
+
+  catalog-service:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: medicare-catalog-service
+    command: ["npm", "run", "start:catalog"]
+    ports:
+      - "4001:4001"
+    environment:
+      - NODE_ENV=production
+      - PORT=4001
+      - NODE_ID=catalog-node-1
+      - MONGODB_URI=mongodb://mongodb:27017/medicare
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+      - mongodb
+    restart: unless-stopped
+
+  booking-service:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: medicare-booking-service
+    command: ["npm", "run", "start:booking"]
+    ports:
+      - "4002:4002"
+    environment:
+      - NODE_ENV=production
+      - PORT=4002
+      - NODE_ID=booking-node-1
+      - MONGODB_URI=mongodb://mongodb:27017/medicare
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+      - mongodb
+    restart: unless-stopped
+
+  ai-triage-service:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: medicare-ai-triage-service
+    command: ["npm", "run", "start:ai"]
+    ports:
+      - "4003:4003"
+    environment:
+      - NODE_ENV=production
+      - PORT=4003
+      - NODE_ID=ai-node-1
+      - MONGODB_URI=mongodb://mongodb:27017/medicare
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+    depends_on:
+      - mongodb
+    restart: unless-stopped
+
+  notification-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: medicare-notification-worker
+    command: ["npm", "run", "start:worker"]
+    ports:
+      - "4004:4004"
+    environment:
+      - NODE_ENV=production
+      - PORT=4004
+      - NODE_ID=worker-node-1
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: medicare-redis
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    restart: unless-stopped
+
+  mongodb:
+    image: mongo:7
+    container_name: medicare-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - medicare_mongo_data:/data/db
+    restart: unless-stopped
+
+volumes:
+  medicare_mongo_data:

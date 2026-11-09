@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useEffect } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, useLocation, Link } from "react-router-dom";
 import {
   ArrowLeft,
   CalendarCheck,
@@ -22,6 +22,7 @@ import "react-toastify/dist/ReactToastify.css";
 import { useAuth, useUser } from "@clerk/clerk-react";
 import { doctorDetailStyles } from "../../assets/dummyStyles";
 import { API_BASE } from "../../lib/api.js";
+import { FALLBACK_DOCTORS } from "../../lib/fallbackCatalog.js";
 
 function getScheduleDates(schedule) {
   if (!schedule) return [];
@@ -89,9 +90,14 @@ function normalizePhoneTo10(phone) {
 
 export default function DoctorDetail() {
   const { id } = useParams();
+  const location = useLocation();
+  const initialDoc =
+    location.state?.doctor ||
+    FALLBACK_DOCTORS.find((d) => String(d._id) === String(id) || String(d.id) === String(id)) ||
+    null;
 
-  const [doctor, setDoctor] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [doctor, setDoctor] = useState(initialDoc);
+  const [loading, setLoading] = useState(!initialDoc);
   const [error, setError] = useState(null);
 
   const [selectedDate, setSelectedDate] = useState(null);
@@ -150,11 +156,12 @@ export default function DoctorDetail() {
   useEffect(() => {
     let mounted = true;
     async function fetchDoctor() {
-      setLoading(true);
+      if (!doctor) setLoading(true);
       setError(null);
       try {
         const res = await fetch(`${API_BASE}/api/doctors/${id}`);
         if (!res.ok) {
+          if (doctor) return;
           const body = await res.json().catch(() => ({}));
           throw new Error(
             body.message || `Failed to fetch (status ${res.status})`,
@@ -162,9 +169,18 @@ export default function DoctorDetail() {
         }
         const payload = await res.json();
         const doc = payload?.data || null;
-        if (mounted) setDoctor(doc);
+        if (mounted && doc) setDoctor(doc);
       } catch (err) {
-        if (mounted) setError(err.message || "Failed to fetch doctor");
+        if (mounted && !doctor) {
+          const fallback =
+            FALLBACK_DOCTORS.find((d) => String(d._id) === String(id) || String(d.id) === String(id)) ||
+            FALLBACK_DOCTORS[0];
+          if (fallback) {
+            setDoctor(fallback);
+          } else {
+            setError(err.message || "Failed to fetch doctor");
+          }
+        }
       } finally {
         if (mounted) setLoading(false);
       }
@@ -290,11 +306,13 @@ export default function DoctorDetail() {
         throw new Error("Failed to obtain authentication token.");
       }
 
+      const idempotencyKey = `appt-${payload.doctorId}-${payload.mobile}-${payload.date}-${payload.time}`;
       const res = await fetch(`${API_BASE}/api/appointments`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
+          "Idempotency-Key": idempotencyKey,
         },
         body: JSON.stringify(payload),
       });

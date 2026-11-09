@@ -1,5 +1,7 @@
 import Service from "../models/Service.js";
 import { uploadToCloudinary, deleteFromCloudinary } from "../utils/cloudinary.js";
+import { eventBus } from "../distributed/eventBus.js";
+import { resilientStore } from "../distributed/resilientStore.js";
 
 const parseJsonArrayField = (field) => {
   if (!field) return [];
@@ -85,6 +87,7 @@ export const createService = async (req, res) => {
       slots,
       dates: Object.keys(slots || {}),
     });
+    eventBus.publish("catalog.service.created", { entity: "Service", action: "created", id: service._id, name: service.name }, { correlationId: req.correlationId });
     return res.status(201).json({ success: true, data: service, service });
   } catch (err) {
     console.error("createService:", err);
@@ -94,6 +97,13 @@ export const createService = async (req, res) => {
 
 export const getServices = async (_req, res) => {
   try {
+    if (!resilientStore.isMongoConnected()) {
+      return res.json({
+        success: true,
+        data: resilientStore.services,
+        services: resilientStore.services,
+      });
+    }
     const services = await Service.find().sort({ createdAt: -1 });
     return res.json({ success: true, data: services, services });
   } catch (err) {
@@ -104,6 +114,11 @@ export const getServices = async (_req, res) => {
 
 export const getServiceById = async (req, res) => {
   try {
+    if (!resilientStore.isMongoConnected()) {
+      const svc = resilientStore.services.find((s) => String(s._id) === String(req.params.id));
+      if (!svc) return res.status(404).json({ success: false, message: "Service not found" });
+      return res.json({ success: true, data: svc, service: svc });
+    }
     const service = await Service.findById(req.params.id);
     if (!service) return res.status(404).json({ success: false, message: "Service not found" });
     return res.json({ success: true, data: service, service });
@@ -153,6 +168,7 @@ export const updateService = async (req, res) => {
     }
 
     const service = await Service.findByIdAndUpdate(req.params.id, updateData, { new: true });
+    eventBus.publish("catalog.service.updated", { entity: "Service", action: "updated", id: service._id, name: service.name }, { correlationId: req.correlationId });
     return res.json({ success: true, data: service, service });
   } catch (err) {
     console.error("updateService:", err);
@@ -165,6 +181,7 @@ export const deleteService = async (req, res) => {
     const service = await Service.findByIdAndDelete(req.params.id);
     if (!service) return res.status(404).json({ success: false, message: "Service not found" });
     if (service.imagePublicId) deleteFromCloudinary(service.imagePublicId).catch(() => {});
+    eventBus.publish("catalog.service.deleted", { entity: "Service", action: "deleted", id: req.params.id, name: service.name }, { correlationId: req.correlationId });
     return res.json({ success: true, message: "Service removed" });
   } catch (err) {
     console.error("deleteService:", err);

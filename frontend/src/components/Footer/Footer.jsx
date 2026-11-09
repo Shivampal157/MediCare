@@ -10,6 +10,7 @@ const quickLinks = [
   { name: "Contact", href: "/contact" },
   { name: "Appointments", href: "/appointments" },
   { name: "Payments", href: "/payments" },
+  { name: "System Architecture (Live)", href: "/system-status" },
 ];
 
 const services = [
